@@ -9,6 +9,11 @@ BiRefNet 배경 제거 - RunPod Serverless Handler
   - width: 출력 이미지 너비
   - height: 출력 이미지 높이
 """
+import os
+# trust_remote_code 자동 허용
+os.environ["HF_HUB_TRUST_REMOTE_CODE"] = "1"
+os.environ["TRUST_REMOTE_CODE"] = "True"
+
 import runpod
 import base64
 import io
