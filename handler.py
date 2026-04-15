@@ -3,7 +3,6 @@ BiRefNet 배경 제거 - RunPod Serverless Handler
 
 입력:
   - image: base64 인코딩된 이미지
-  - model: "BiRefNet" (기본값)
 
 출력:
   - image: base64 PNG (배경 제거된 투명 이미지)
@@ -13,7 +12,6 @@ BiRefNet 배경 제거 - RunPod Serverless Handler
 import runpod
 import base64
 import io
-import os
 import traceback
 
 import numpy as np
@@ -21,68 +19,55 @@ import torch
 from PIL import Image
 
 # 글로벌 모델 (lazy loading)
-birefnet_model = None
-birefnet_transform = None
+birefnet_pipeline = None
 
 
 def load_model():
-    """BiRefNet 모델 로드"""
-    global birefnet_model, birefnet_transform
+    """BiRefNet 파이프라인 로드 (transformers pipeline 방식)"""
+    global birefnet_pipeline
 
-    if birefnet_model is not None:
+    if birefnet_pipeline is not None:
         return
 
-    print("Loading BiRefNet model...")
-    from transformers import AutoModelForImageSegmentation
-    from torchvision import transforms
+    print("Loading BiRefNet pipeline...")
+    from transformers import pipeline
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    birefnet_model = AutoModelForImageSegmentation.from_pretrained(
-        "ZhengPeng7/BiRefNet",
+    birefnet_pipeline = pipeline(
+        "image-segmentation",
+        model="ZhengPeng7/BiRefNet",
         trust_remote_code=True,
-        torch_dtype=torch.float16
-    ).to(device).eval()
+        device=0 if torch.cuda.is_available() else -1,
+    )
 
-    birefnet_transform = transforms.Compose([
-        transforms.Resize((1024, 1024)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-
-    print(f"BiRefNet loaded on {device}")
+    print("BiRefNet pipeline loaded")
 
 
 def remove_background(image_b64):
     """배경 제거 실행"""
     load_model()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
     # base64 → PIL Image
     image_data = base64.b64decode(image_b64)
     image = Image.open(io.BytesIO(image_data)).convert("RGB")
     original_size = image.size
 
-    # 전처리
-    input_tensor = birefnet_transform(image).unsqueeze(0).to(device).to(torch.float16)
+    # 파이프라인 실행
+    result = birefnet_pipeline(image)
 
-    # 추론
-    with torch.no_grad():
-        preds = birefnet_model(input_tensor)[-1].sigmoid().cpu()
+    # 결과에서 마스크 추출
+    mask = result[0]["mask"] if isinstance(result, list) else result["mask"]
 
-    # 마스크 생성
-    mask = preds[0].squeeze()
-    mask = (mask * 255).byte().numpy()
-    mask_image = Image.fromarray(mask).resize(original_size, Image.BILINEAR)
+    # 마스크를 원본 크기로 리사이즈
+    if mask.size != original_size:
+        mask = mask.resize(original_size, Image.BILINEAR)
 
     # 알파 채널 적용
-    result = image.copy().convert("RGBA")
-    result.putalpha(mask_image)
+    output = image.copy().convert("RGBA")
+    output.putalpha(mask)
 
     # PIL → base64
     buffer = io.BytesIO()
-    result.save(buffer, format="PNG")
+    output.save(buffer, format="PNG")
     result_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     return result_b64, original_size[0], original_size[1]
