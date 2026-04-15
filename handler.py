@@ -1,5 +1,5 @@
 """
-BiRefNet 배경 제거 - RunPod Serverless Handler
+RMBG-2.0 배경 제거 - RunPod Serverless Handler
 
 입력:
   - image: base64 인코딩된 이미지
@@ -17,84 +17,91 @@ import traceback
 import numpy as np
 import torch
 from PIL import Image
+from torchvision import transforms
 
-# 글로벌 모델 (lazy loading)
-birefnet_pipeline = None
+# 글로벌 모델
+model = None
+device = None
 
 
 def load_model():
-    """BiRefNet 파이프라인 로드 (transformers pipeline 방식)"""
-    global birefnet_pipeline
-
-    if birefnet_pipeline is not None:
+    global model, device
+    if model is not None:
         return
 
-    print("Loading BiRefNet pipeline...")
-    from transformers import pipeline
+    print("Loading RMBG-2.0 model...")
+    from transformers import AutoModelForImageSegmentation
 
-    birefnet_pipeline = pipeline(
-        "image-segmentation",
-        model="ZhengPeng7/BiRefNet",
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = AutoModelForImageSegmentation.from_pretrained(
+        "briaai/RMBG-2.0",
         trust_remote_code=True,
-        device=0 if torch.cuda.is_available() else -1,
     )
+    # 모델의 dtype에 맞추기
+    model = model.to(device)
+    model.eval()
 
-    print("BiRefNet pipeline loaded")
+    print(f"RMBG-2.0 loaded on {device}, dtype={next(model.parameters()).dtype}")
 
 
 def remove_background(image_b64):
-    """배경 제거 실행"""
     load_model()
 
     # base64 → PIL Image
-    image_data = base64.b64decode(image_b64)
-    image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    raw = base64.b64decode(image_b64)
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
     original_size = image.size
 
-    # 파이프라인 실행
-    result = birefnet_pipeline(image)
+    # 모델의 dtype 확인
+    model_dtype = next(model.parameters()).dtype
 
-    # 결과에서 마스크 추출
-    mask = result[0]["mask"] if isinstance(result, list) else result["mask"]
+    # 전처리
+    transform = transforms.Compose([
+        transforms.Resize((1024, 1024)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+    input_tensor = transform(image).unsqueeze(0).to(device, dtype=model_dtype)
 
-    # 마스크를 원본 크기로 리사이즈
-    if mask.size != original_size:
-        mask = mask.resize(original_size, Image.BILINEAR)
+    # 추론
+    with torch.no_grad():
+        preds = model(input_tensor)[-1].sigmoid().cpu()
 
-    # 알파 채널 적용
+    # 마스크
+    mask = preds[0].squeeze()
+    mask_np = (mask.float() * 255).byte().numpy()
+    mask_img = Image.fromarray(mask_np).resize(original_size, Image.BILINEAR)
+
+    # 알파 적용
     output = image.copy().convert("RGBA")
-    output.putalpha(mask)
+    output.putalpha(mask_img)
 
-    # PIL → base64
-    buffer = io.BytesIO()
-    output.save(buffer, format="PNG")
-    result_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-    return result_b64, original_size[0], original_size[1]
+    # base64 출력
+    buf = io.BytesIO()
+    output.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8"), original_size[0], original_size[1]
 
 
 def handler(event):
-    """RunPod handler"""
     try:
-        input_data = event.get("input", {})
-        image_b64 = input_data.get("image", "")
+        inp = event.get("input", {})
+        image_b64 = inp.get("image", "")
 
         if not image_b64:
             return {"error": "image is required"}
 
-        # data URL prefix 제거
         if image_b64.startswith("data:"):
             image_b64 = image_b64.split(",")[1]
 
-        result_b64, width, height = remove_background(image_b64)
+        result_b64, w, h = remove_background(image_b64)
 
         return {
             "image": result_b64,
             "format": "png",
-            "width": width,
-            "height": height,
+            "width": w,
+            "height": h,
         }
-
     except Exception as e:
         traceback.print_exc()
         return {"error": str(e)}
