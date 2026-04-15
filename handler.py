@@ -1,5 +1,5 @@
 """
-RMBG-2.0 배경 제거 - RunPod Serverless Handler
+BiRefNet 배경 제거 - RunPod Serverless Handler
 
 입력:
   - image: base64 인코딩된 이미지
@@ -22,27 +22,37 @@ from torchvision import transforms
 # 글로벌 모델
 model = None
 device = None
+model_dtype = None
 
 
 def load_model():
-    global model, device
+    global model, device, model_dtype
     if model is not None:
         return
 
-    print("Loading RMBG-2.0 model...")
+    print("Loading BiRefNet model...")
     from transformers import AutoModelForImageSegmentation
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # float32로 로드 후 GPU로 이동
     model = AutoModelForImageSegmentation.from_pretrained(
-        "briaai/RMBG-2.0",
+        "ZhengPeng7/BiRefNet",
         trust_remote_code=True,
     )
-    # 모델의 dtype에 맞추기
-    model = model.to(device)
-    model.eval()
 
-    print(f"RMBG-2.0 loaded on {device}, dtype={next(model.parameters()).dtype}")
+    # 모델 전체를 float32로 강제 변환 후 GPU로
+    model = model.float().to(device).eval()
+    model_dtype = torch.float32
+
+    # 확인
+    actual_dtype = next(model.parameters()).dtype
+    print(f"BiRefNet loaded on {device}, dtype={actual_dtype}")
+
+    # 만약 여전히 half이면 입력을 half로 맞추기
+    if actual_dtype != torch.float32:
+        model_dtype = actual_dtype
+        print(f"Model is {actual_dtype}, will match input dtype")
 
 
 def remove_background(image_b64):
@@ -53,16 +63,13 @@ def remove_background(image_b64):
     image = Image.open(io.BytesIO(raw)).convert("RGB")
     original_size = image.size
 
-    # 모델의 dtype 확인
-    model_dtype = next(model.parameters()).dtype
-
     # 전처리
     transform = transforms.Compose([
         transforms.Resize((1024, 1024)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
-    input_tensor = transform(image).unsqueeze(0).to(device, dtype=model_dtype)
+    input_tensor = transform(image).unsqueeze(0).to(device).to(model_dtype)
 
     # 추론
     with torch.no_grad():
