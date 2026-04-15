@@ -41,7 +41,7 @@ def load_model():
     birefnet_model = AutoModelForImageSegmentation.from_pretrained(
         "ZhengPeng7/BiRefNet",
         trust_remote_code=True
-    ).to(device).eval()
+    ).to(device).to(torch.float32).eval()
 
     birefnet_transform = transforms.Compose([
         transforms.Resize((1024, 1024)),
@@ -64,7 +64,7 @@ def remove_background(image_b64):
     original_size = image.size
 
     # 전처리
-    input_tensor = birefnet_transform(image).unsqueeze(0).to(device)
+    input_tensor = birefnet_transform(image).unsqueeze(0).to(device).to(torch.float32)
 
     # 추론
     with torch.no_grad():
