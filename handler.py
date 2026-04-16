@@ -63,9 +63,12 @@ def load_model():
 def remove_background(image_b64):
     load_model()
 
-    # base64 → PIL Image
+    # base64 → PIL Image (EXIF 회전 적용)
     raw = base64.b64decode(image_b64)
-    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    image = Image.open(io.BytesIO(raw))
+    from PIL import ImageOps
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
     original_size = image.size
 
     # 전처리
